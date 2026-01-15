@@ -1,0 +1,7 @@
+# Fly.io ignores these files
+.env
+.git
+__pycache__
+*.pyc
+.venv
+venv

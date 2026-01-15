@@ -1,0 +1,18 @@
+# fly.toml app configuration file generated for weex-hackathon-bot on 2026-01-15T01:16:54-04:00
+#
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
+
+app = 'weex-hackathon-bot'
+primary_region = 'gru'
+
+[build]
+
+# Run as a one-off machine (runs once and stops)
+[processes]
+  worker = "python main.py"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"
+
