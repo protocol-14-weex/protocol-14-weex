@@ -39,8 +39,8 @@ MIN_SIGNAL_STRENGTH = 50   # Señal mínima para ejecutar (%) - bajado para más
 STOP_LOSS_PCT = 2.0        # Stop Loss %
 TAKE_PROFIT_PCT = 3.0      # Take Profit %
 SCAN_INTERVAL = 30         # Segundos entre escaneos
-MAX_DAILY_TRADES = 20      # Máximo trades por día
-MAX_DAILY_LOSS = 50        # Máximo pérdida diaria USD
+MAX_DAILY_TRADES = 50      # Máximo trades por día (aumentado)
+MAX_DAILY_LOSS = 100       # Máximo pérdida diaria USD (aumentado)
 
 # Monedas a monitorear (sin BTC que está en Grid)
 MONITORED_COINS = [
