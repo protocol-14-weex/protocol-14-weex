@@ -1,7 +1,7 @@
 {
-  "updated": "2026-01-15T16:07:39.750152",
+  "updated": "2026-01-15T16:13:03.154441",
   "daily_pnl": 0.0,
-  "total_trades": 6,
+  "total_trades": 7,
   "trades": [
     {
       "id": "706769703556613119",
@@ -106,6 +106,24 @@
       "take_profit": 956.3653,
       "signal_strength": 55,
       "rsi": 21.7,
+      "status": "open",
+      "pnl": 0.0,
+      "exit_price": 0.0,
+      "closed_at": ""
+    },
+    {
+      "id": "706773706789094399",
+      "timestamp": "2026-01-15T16:13:03.154441",
+      "symbol": "cmt_bnbusdt",
+      "action": "long",
+      "entry_price": 928.74,
+      "size": 0.2,
+      "size_usd": 15,
+      "leverage": 10,
+      "stop_loss": 910.1652,
+      "take_profit": 956.6022,
+      "signal_strength": 55,
+      "rsi": 20.3,
       "status": "open",
       "pnl": 0.0,
       "exit_price": 0.0,
