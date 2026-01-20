@@ -26,3 +26,8 @@ Thumbs.db
 # Logs
 *.log
 logs/
+
+# Deployment scripts - CONTAINS SENSITIVE INFO (IP, passwords)
+deploy/
+*.sh
+deploy_*.ps1
