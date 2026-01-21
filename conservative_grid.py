@@ -364,8 +364,16 @@ class ConservativeGridBot:
             return 0, 0, 0
         
         price = ticker['last']
-        high_24h = ticker.get('high24h', price * 1.02)
-        low_24h = ticker.get('low24h', price * 0.98)
+        high_24h = ticker.get('high24h', 0)
+        low_24h = ticker.get('low24h', 0)
+        
+        # Debug output
+        print(f"      DEBUG {symbol}: price={price}, high24h={high_24h}, low24h={low_24h}")
+        
+        # If no high/low data, use price +/- 2%
+        if high_24h == 0 or low_24h == 0 or high_24h == low_24h:
+            high_24h = price * 1.02
+            low_24h = price * 0.98
         
         # Calcular soporte y resistencia simples
         range_size = high_24h - low_24h
@@ -381,24 +389,25 @@ class ConservativeGridBot:
         Returns:
             (symbol, side, entry_price, size) or None
         """
+        print(f"\n📊 ANALYZING ALL SYMBOLS:")
+        print(f"   LONG: RSI < 45 (oversold)")
+        print(f"   SHORT: RSI > 65 (overbought)")
+        
+        best_signal = None
+        
         for symbol, config in self.GRID_CONFIGS.items():
             # Skip si ya tenemos posición
             if symbol in self.positions:
+                print(f"   {symbol}: SKIP (already have position)")
                 continue
             
             # Obtener datos
             price, support, resistance = self.get_price_range(symbol)
             if price == 0:
+                print(f"   {symbol}: SKIP (no price data)")
                 continue
             
             rsi = self.calculate_rsi(symbol)
-            
-            # Determinar posición en el rango
-            range_size = resistance - support
-            if range_size <= 0:
-                continue
-            
-            position_in_range = (price - support) / range_size
             
             # Calcular tamaño
             step = self.get_step_size(symbol)
@@ -406,34 +415,78 @@ class ConservativeGridBot:
             raw_size = notional / price
             size = round(raw_size / step) * step
             
-            # Log analysis for debugging
-            log_decision(f"📈 ANALYZING {symbol}", {
-                'type': 'analysis',
+            # Determine signal based on RSI only (simpler and more reliable)
+            signal = "NONE"
+            strength = 0
+            
+            if rsi < 45:  # Oversold → LONG
+                signal = "🟢 LONG"
+                strength = 45 - rsi  # Higher strength for lower RSI
+            elif rsi > 65:  # Overbought → SHORT
+                signal = "🔴 SHORT"
+                strength = rsi - 65  # Higher strength for higher RSI
+            
+            print(f"   {symbol}: price=${price:.2f}, RSI={rsi:.1f} → {signal} (strength={strength:.1f})")
+            
+            # Take the first signal we find (but prefer stronger signals)
+            if signal != "NONE" and (best_signal is None or strength > best_signal[4]):
+                if rsi < 45:
+                    best_signal = (symbol, 'buy', price, size, strength)
+                else:
+                    best_signal = (symbol, 'sell', price, size, strength)
+        
+        if best_signal:
+            symbol, side, price, size, _ = best_signal
+            print(f"\n   ✅ TAKING {side.upper()} on {symbol}")
+            log_decision(f"📈 OPENING {side.upper()} {symbol}", {
+                'type': 'trade_signal',
                 'symbol': symbol,
-                'price': price,
-                'rsi': rsi,
-                'position_in_range': position_in_range,
-                'support': support,
-                'resistance': resistance
+                'side': side.upper(),
+                'price': price
             })
+            return symbol, side, price, size
+        
+        # If no clear RSI signal, take ANY trade to generate activity
+        # Pick the symbol with the most extreme RSI
+        print(f"\n   ⚠️ No clear RSI signal. Checking for any opportunity...")
+        
+        for symbol, config in self.GRID_CONFIGS.items():
+            if symbol in self.positions:
+                continue
             
-            # LONG: Cerca de soporte + RSI bajo (RELAXED CRITERIA)
-            if position_in_range < 0.45 and rsi < 50:
-                print(f"\n📊 {symbol}:")
-                print(f"   Price: ${price:.4f}")
-                print(f"   RSI: {rsi:.1f}")
-                print(f"   Position in range: {position_in_range:.0%}")
-                print(f"   Signal: 🟢 LONG (near support, RSI favorable)")
-                return symbol, 'buy', price, size
+            price, _, _ = self.get_price_range(symbol)
+            if price == 0:
+                continue
             
-            # SHORT: Cerca de resistencia + RSI alto (RELAXED CRITERIA)
-            if position_in_range > 0.55 and rsi > 50:
-                print(f"\n📊 {symbol}:")
-                print(f"   Price: ${price:.4f}")
-                print(f"   RSI: {rsi:.1f}")
-                print(f"   Position in range: {position_in_range:.0%}")
-                print(f"   Signal: 🔴 SHORT (near resistance, RSI favorable)")
+            rsi = self.calculate_rsi(symbol)
+            step = self.get_step_size(symbol)
+            notional = config.position_size * config.leverage
+            raw_size = notional / price
+            size = round(raw_size / step) * step
+            
+            # Take SHORT if RSI > 55 (slightly overbought)
+            if rsi > 55:
+                print(f"   ✅ TAKING SHORT on {symbol} (RSI={rsi:.1f} > 55)")
+                log_decision(f"📈 OPENING SHORT {symbol}", {
+                    'type': 'trade_signal',
+                    'symbol': symbol,
+                    'side': 'SHORT',
+                    'price': price,
+                    'rsi': rsi
+                })
                 return symbol, 'sell', price, size
+            
+            # Take LONG if RSI < 55 (neutral to oversold)
+            if rsi < 55:
+                print(f"   ✅ TAKING LONG on {symbol} (RSI={rsi:.1f} < 55)")
+                log_decision(f"📈 OPENING LONG {symbol}", {
+                    'type': 'trade_signal',
+                    'symbol': symbol,
+                    'side': 'LONG',
+                    'price': price,
+                    'rsi': rsi
+                })
+                return symbol, 'buy', price, size
         
         return None
     
