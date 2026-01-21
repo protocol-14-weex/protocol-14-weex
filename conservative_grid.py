@@ -14,6 +14,7 @@ Características:
 import os
 import sys
 import time
+import json
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
@@ -26,6 +27,48 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from weex_client import WeexClient
 
 load_dotenv()
+
+# Log file for real-time decisions
+LOG_FILE = "bot_decisions.log"
+JSON_LOG_FILE = "bot_signals.json"
+
+
+def log_decision(message: str, data: dict = None):
+    """Log a decision to file with timestamp"""
+    timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    log_entry = f"[{timestamp}] {message}"
+    
+    # Console print
+    print(log_entry)
+    
+    # File log
+    with open(LOG_FILE, 'a', encoding='utf-8') as f:
+        f.write(log_entry + "\n")
+    
+    # JSON log for structured data
+    if data:
+        try:
+            # Read existing
+            signals = []
+            if os.path.exists(JSON_LOG_FILE):
+                with open(JSON_LOG_FILE, 'r') as f:
+                    signals = json.load(f)
+            
+            # Add new entry
+            signals.append({
+                'timestamp': timestamp,
+                'message': message,
+                **data
+            })
+            
+            # Keep last 500 entries
+            signals = signals[-500:]
+            
+            # Write back
+            with open(JSON_LOG_FILE, 'w') as f:
+                json.dump(signals, f, indent=2)
+        except:
+            pass
 
 
 @dataclass
@@ -88,14 +131,27 @@ class CoinGeckoLite:
         fng = self.get_fear_greed()
         market = self.get_market_condition()
         
+        # Log the signal data
+        log_decision("🦎 COINGECKO SIGNAL", {
+            'type': 'coingecko_signal',
+            'fear_greed': fng,
+            'btc_dominance': market['btc_dominance'],
+            'market_change_24h': market['market_change_24h'],
+            'total_volume': market['total_volume']
+        })
+        
         # Condiciones peligrosas
         if fng < 15:
+            log_decision(f"⚠️ EXTREME FEAR - Trading paused", {'safe': False, 'reason': 'extreme_fear'})
             return False, f"⚠️ Extreme Fear ({fng}) - Mercado muy volátil"
         if fng > 85:
+            log_decision(f"⚠️ EXTREME GREED - Trading paused", {'safe': False, 'reason': 'extreme_greed'})
             return False, f"⚠️ Extreme Greed ({fng}) - Posible corrección"
         if abs(market['market_change_24h']) > 8:
+            log_decision(f"⚠️ HIGH VOLATILITY - Trading paused", {'safe': False, 'reason': 'high_volatility'})
             return False, f"⚠️ Mercado moviendo {market['market_change_24h']:.1f}% - Muy volátil"
         
+        log_decision(f"✅ MARKET SAFE - Trading active", {'safe': True, 'fng': fng, 'change_24h': market['market_change_24h']})
         return True, f"✅ Market OK (FnG: {fng}, 24h: {market['market_change_24h']:+.1f}%)"
 
 
@@ -410,6 +466,19 @@ class ConservativeGridBot:
             if result and result.get('orderId'):
                 print(f"   ✅ Order: {result['orderId']}")
                 
+                # LOG THE TRADE DECISION
+                log_decision(f"🎯 OPENED {side.upper()} {symbol}", {
+                    'type': 'trade_opened',
+                    'symbol': symbol,
+                    'side': side,
+                    'size': size,
+                    'entry_price': price,
+                    'take_profit': tp_price,
+                    'stop_loss': sl_price,
+                    'leverage': config.leverage,
+                    'order_id': result['orderId']
+                })
+                
                 self.positions[symbol] = {
                     'order_id': result['orderId'],
                     'side': side,
@@ -472,6 +541,18 @@ class ConservativeGridBot:
                     print(f"\n{emoji} CLOSING {symbol}")
                     print(f"   Entry: ${entry_price:.4f} → Exit: ${current_price:.4f}")
                     print(f"   PnL: {pnl_pct:+.2f}% (${actual_pnl:+.2f})")
+                    
+                    # LOG THE CLOSE
+                    log_decision(f"{emoji} CLOSED {symbol}", {
+                        'type': 'trade_closed',
+                        'symbol': symbol,
+                        'side': side,
+                        'entry_price': entry_price,
+                        'exit_price': current_price,
+                        'pnl_pct': pnl_pct,
+                        'pnl_usd': actual_pnl,
+                        'reason': 'take_profit' if hit_tp else 'stop_loss'
+                    })
                     
                     # Close position
                     self.client.place_order(
