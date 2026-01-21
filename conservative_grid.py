@@ -1,14 +1,20 @@
 #!/usr/bin/env python3
 """
-🏆 CONSERVATIVE GRID BOT
-Estrategia segura para clasificar en hackathon
+🚀 MICRO SCALPER BOT - Hackathon Winner Strategy
+Estrategia de reversión rápida para ganar $1-2 por trade
 
-Características:
-- Grid trading en rangos laterales
-- Leverage bajo (5x-10x)
-- Stop loss dinámico por ATR
-- Solo monedas de alta liquidez
-- CoinGecko para filtrar condiciones de mercado
+Concepto:
+- Detectar "overextension" (precio alejado de media móvil)
+- Cuando SUBE mucho → SHORT (esperar corrección)
+- Cuando BAJA mucho → LONG (esperar rebote)
+- TP pequeño 0.15% = ~$1 ganancia
+- Muchos trades = acumulación constante
+
+Timeframes:
+- 1m: Señal de entrada
+- 5m: Confirmación de tendencia corta
+- 15m: Contexto general
+- 1h: Panorama macro
 """
 
 import os
@@ -166,51 +172,25 @@ class ConservativeGridBot:
     4. Stop loss dinámico para proteger capital
     """
     
-    # Configuración por moneda (CONSERVADORA)
+    # Configuración MICRO SCALPER - Ganar $1-2 por trade
+    # Trades rápidos en minutos aprovechando oscilaciones
     GRID_CONFIGS = {
         'cmt_btcusdt': GridConfig(
             symbol='cmt_btcusdt',
             position_size=100,    # $100 por trade
             leverage=10,          # 10x leverage
-            grid_spacing=0.3,     # 0.3% entre niveles
-            take_profit=0.5,      # 0.5% ganancia = $5 con $100 x10
-            stop_loss=0.8,        # 0.8% máximo = $8 pérdida
-            max_positions=2
+            grid_spacing=0.1,     # No usado en scalping
+            take_profit=0.12,     # 0.12% = ~$1.2 ganancia
+            stop_loss=0.25,       # 0.25% = ~$2.5 pérdida max
+            max_positions=1       # Solo 1 posición a la vez por coin
         ),
         'cmt_ethusdt': GridConfig(
             symbol='cmt_ethusdt',
-            position_size=100,
-            leverage=10,
-            grid_spacing=0.4,     # ETH más volátil
-            take_profit=0.6,
-            stop_loss=1.0,
-            max_positions=2
-        ),
-        'cmt_solusdt': GridConfig(
-            symbol='cmt_solusdt',
-            position_size=75,     # Menos capital en SOL
-            leverage=10,
-            grid_spacing=0.5,
-            take_profit=0.8,
-            stop_loss=1.2,
-            max_positions=2
-        ),
-        'cmt_ltcusdt': GridConfig(
-            symbol='cmt_ltcusdt',
-            position_size=75,
-            leverage=10,
-            grid_spacing=0.4,
-            take_profit=0.6,
-            stop_loss=1.0,
-            max_positions=2
-        ),
-        'cmt_dogeusdt': GridConfig(
-            symbol='cmt_dogeusdt',
-            position_size=50,     # DOGE más riesgoso
-            leverage=5,           # Menos leverage
-            grid_spacing=0.6,
-            take_profit=1.0,
-            stop_loss=1.5,
+            position_size=100,    # $100 por trade
+            leverage=10,          # 10x leverage
+            grid_spacing=0.1,
+            take_profit=0.15,     # 0.15% = ~$1.5 ganancia (ETH más volátil)
+            stop_loss=0.30,       # 0.30% = ~$3 pérdida max
             max_positions=1
         ),
     }
@@ -352,6 +332,104 @@ class ConservativeGridBot:
         except:
             return 50.0
     
+    def get_multi_timeframe_analysis(self, symbol: str) -> Dict:
+        """
+        Análisis multi-timeframe para detectar reversiones
+        
+        Timeframes:
+        - 1m: Señal inmediata (¿está overextended?)
+        - 5m: Tendencia corta
+        - 15m: Contexto
+        - 1h: Panorama general
+        """
+        analysis = {
+            '1m': {'trend': 'neutral', 'change_pct': 0, 'overextended': False},
+            '5m': {'trend': 'neutral', 'change_pct': 0, 'rsi': 50},
+            '15m': {'trend': 'neutral', 'change_pct': 0},
+            '1h': {'trend': 'neutral', 'change_pct': 0},
+        }
+        
+        timeframes = [('1m', 20), ('5m', 20), ('15m', 12), ('1H', 6)]
+        
+        for tf, limit in timeframes:
+            try:
+                candles = self.client.get_candles(symbol, granularity=tf, limit=limit)
+                if not candles or len(candles) < 3:
+                    continue
+                
+                # Sort by timestamp
+                candles_sorted = sorted(candles, key=lambda x: int(x[0]))
+                closes = [float(c[4]) for c in candles_sorted]
+                highs = [float(c[2]) for c in candles_sorted]
+                lows = [float(c[3]) for c in candles_sorted]
+                
+                # Current price vs previous candles
+                current = closes[-1]
+                prev = closes[-2] if len(closes) > 1 else current
+                
+                # Calculate change %
+                change_pct = ((current - prev) / prev) * 100 if prev > 0 else 0
+                
+                # Calculate EMA for overextension detection
+                ema_period = min(5, len(closes))
+                ema = sum(closes[-ema_period:]) / ema_period
+                distance_from_ema = ((current - ema) / ema) * 100 if ema > 0 else 0
+                
+                # Determine trend
+                if change_pct > 0.05:
+                    trend = 'bullish'
+                elif change_pct < -0.05:
+                    trend = 'bearish'
+                else:
+                    trend = 'neutral'
+                
+                tf_key = tf.lower()
+                if tf_key == '1h':
+                    tf_key = '1h'
+                
+                analysis[tf_key] = {
+                    'trend': trend,
+                    'change_pct': change_pct,
+                    'distance_from_ema': distance_from_ema,
+                    'current_price': current,
+                    'ema': ema,
+                    'high': max(highs[-3:]) if highs else current,
+                    'low': min(lows[-3:]) if lows else current,
+                }
+                
+                # Check if overextended (1m timeframe)
+                if tf == '1m':
+                    # Overextended UP: price > 0.15% above EMA
+                    # Overextended DOWN: price < 0.15% below EMA
+                    analysis['1m']['overextended_up'] = distance_from_ema > 0.12
+                    analysis['1m']['overextended_down'] = distance_from_ema < -0.12
+                
+                # Calculate RSI for 5m
+                if tf == '5m' and len(closes) >= 14:
+                    gains = []
+                    losses = []
+                    for i in range(1, len(closes)):
+                        change = closes[i] - closes[i-1]
+                        gains.append(max(0, change))
+                        losses.append(max(0, -change))
+                    
+                    avg_gain = sum(gains[-14:]) / 14 if len(gains) >= 14 else 0
+                    avg_loss = sum(losses[-14:]) / 14 if len(losses) >= 14 else 0
+                    
+                    if avg_loss > 0:
+                        rs = avg_gain / avg_loss
+                        rsi = 100 - (100 / (1 + rs))
+                    else:
+                        rsi = 100 if avg_gain > 0 else 50
+                    
+                    analysis['5m']['rsi'] = rsi
+                    
+            except Exception as e:
+                print(f"      ⚠️ Error {tf}: {e}")
+                continue
+        
+        return analysis
+    
     def get_price_range(self, symbol: str) -> Tuple[float, float, float]:
         """
         Obtener rango de precio actual
@@ -384,110 +462,132 @@ class ConservativeGridBot:
     
     def find_opportunity(self) -> Optional[Tuple[str, str, float, float]]:
         """
-        Buscar oportunidad de trading
+        🎯 MICRO SCALPER - Detectar reversiones para ganar $1-2
+        
+        ESTRATEGIA:
+        - Si SUBIÓ mucho (overextended UP) → SHORT (esperar corrección)
+        - Si BAJÓ mucho (overextended DOWN) → LONG (esperar rebote)
+        - Confirmar con RSI y tendencia de 5m/15m
         
         Returns:
             (symbol, side, entry_price, size) or None
         """
-        print(f"\n📊 ANALYZING ALL SYMBOLS:")
-        print(f"   LONG: RSI < 45 (oversold)")
-        print(f"   SHORT: RSI > 65 (overbought)")
-        
-        best_signal = None
+        print(f"\n🔍 MICRO SCALPER ANALYSIS:")
+        print(f"   Strategy: Catch reversions for quick $1-2 profits")
         
         for symbol, config in self.GRID_CONFIGS.items():
             # Skip si ya tenemos posición
             if symbol in self.positions:
-                print(f"   {symbol}: SKIP (already have position)")
+                print(f"\n   {symbol}: ⏳ Already in position")
                 continue
             
-            # Obtener datos
-            price, support, resistance = self.get_price_range(symbol)
+            # Multi-timeframe analysis
+            mtf = self.get_multi_timeframe_analysis(symbol)
+            
+            # Extract data
+            m1 = mtf.get('1m', {})
+            m5 = mtf.get('5m', {})
+            m15 = mtf.get('15m', {})
+            h1 = mtf.get('1h', {})
+            
+            price = m1.get('current_price', 0)
             if price == 0:
-                print(f"   {symbol}: SKIP (no price data)")
+                print(f"\n   {symbol}: ❌ No price data")
                 continue
             
-            rsi = self.calculate_rsi(symbol)
+            # Key metrics
+            dist_ema = m1.get('distance_from_ema', 0)
+            rsi_5m = m5.get('rsi', 50)
+            change_1m = m1.get('change_pct', 0)
+            change_5m = m5.get('change_pct', 0)
+            overext_up = m1.get('overextended_up', False)
+            overext_down = m1.get('overextended_down', False)
             
-            # Calcular tamaño
+            # Print analysis
+            print(f"\n   📊 {symbol} @ ${price:.2f}")
+            print(f"      1m:  {m1.get('trend', '?'):8} | Δ {change_1m:+.3f}% | EMA dist: {dist_ema:+.3f}%")
+            print(f"      5m:  {m5.get('trend', '?'):8} | Δ {change_5m:+.3f}% | RSI: {rsi_5m:.1f}")
+            print(f"      15m: {m15.get('trend', '?'):8} | Δ {m15.get('change_pct', 0):+.3f}%")
+            print(f"      1h:  {h1.get('trend', '?'):8} | Δ {h1.get('change_pct', 0):+.3f}%")
+            
+            # Calculate size
             step = self.get_step_size(symbol)
             notional = config.position_size * config.leverage
             raw_size = notional / price
             size = round(raw_size / step) * step
             
-            # Determine signal based on RSI only (simpler and more reliable)
-            signal = "NONE"
-            strength = 0
+            # Expected profit calculation
+            expected_profit = notional * (config.take_profit / 100)
+            max_loss = notional * (config.stop_loss / 100)
             
-            if rsi < 45:  # Oversold → LONG
-                signal = "🟢 LONG"
-                strength = 45 - rsi  # Higher strength for lower RSI
-            elif rsi > 65:  # Overbought → SHORT
-                signal = "🔴 SHORT"
-                strength = rsi - 65  # Higher strength for higher RSI
+            # ═══════════════════════════════════════════════════════════
+            # 🎯 SIGNAL DETECTION
+            # ═══════════════════════════════════════════════════════════
             
-            print(f"   {symbol}: price=${price:.2f}, RSI={rsi:.1f} → {signal} (strength={strength:.1f})")
+            signal = None
+            reason = ""
             
-            # Take the first signal we find (but prefer stronger signals)
-            if signal != "NONE" and (best_signal is None or strength > best_signal[4]):
-                if rsi < 45:
-                    best_signal = (symbol, 'buy', price, size, strength)
-                else:
-                    best_signal = (symbol, 'sell', price, size, strength)
-        
-        if best_signal:
-            symbol, side, price, size, _ = best_signal
-            print(f"\n   ✅ TAKING {side.upper()} on {symbol}")
-            log_decision(f"📈 OPENING {side.upper()} {symbol}", {
-                'type': 'trade_signal',
-                'symbol': symbol,
-                'side': side.upper(),
-                'price': price
-            })
-            return symbol, side, price, size
-        
-        # If no clear RSI signal, take ANY trade to generate activity
-        # Pick the symbol with the most extreme RSI
-        print(f"\n   ⚠️ No clear RSI signal. Checking for any opportunity...")
-        
-        for symbol, config in self.GRID_CONFIGS.items():
-            if symbol in self.positions:
-                continue
+            # CASO 1: OVEREXTENDED UP → SHORT
+            # Precio subió mucho, esperar corrección
+            if overext_up or dist_ema > 0.10:
+                # Confirmación: RSI alto en 5m
+                if rsi_5m > 55:
+                    signal = 'sell'
+                    reason = f"🔴 OVEREXTENDED UP | EMA dist: {dist_ema:+.2f}% | RSI: {rsi_5m:.0f}"
+                    print(f"      ➡️  {reason}")
+                    print(f"      💰 Expected profit: ${expected_profit:.2f} | Max loss: ${max_loss:.2f}")
             
-            price, _, _ = self.get_price_range(symbol)
-            if price == 0:
-                continue
+            # CASO 2: OVEREXTENDED DOWN → LONG
+            # Precio bajó mucho, esperar rebote
+            elif overext_down or dist_ema < -0.10:
+                # Confirmación: RSI bajo en 5m
+                if rsi_5m < 45:
+                    signal = 'buy'
+                    reason = f"🟢 OVEREXTENDED DOWN | EMA dist: {dist_ema:+.2f}% | RSI: {rsi_5m:.0f}"
+                    print(f"      ➡️  {reason}")
+                    print(f"      💰 Expected profit: ${expected_profit:.2f} | Max loss: ${max_loss:.2f}")
             
-            rsi = self.calculate_rsi(symbol)
-            step = self.get_step_size(symbol)
-            notional = config.position_size * config.leverage
-            raw_size = notional / price
-            size = round(raw_size / step) * step
+            # CASO 3: RSI EXTREMO sin overextension clara
+            elif rsi_5m > 65 and change_1m > 0:
+                signal = 'sell'
+                reason = f"🔴 RSI OVERBOUGHT ({rsi_5m:.0f}) + upward momentum"
+                print(f"      ➡️  {reason}")
             
-            # Take SHORT if RSI > 55 (slightly overbought)
-            if rsi > 55:
-                print(f"   ✅ TAKING SHORT on {symbol} (RSI={rsi:.1f} > 55)")
-                log_decision(f"📈 OPENING SHORT {symbol}", {
-                    'type': 'trade_signal',
+            elif rsi_5m < 35 and change_1m < 0:
+                signal = 'buy'
+                reason = f"🟢 RSI OVERSOLD ({rsi_5m:.0f}) + downward momentum"
+                print(f"      ➡️  {reason}")
+            
+            # CASO 4: Momentum rápido (1m change > 0.15%)
+            elif abs(change_1m) > 0.12:
+                if change_1m > 0.12:  # Subida rápida → SHORT
+                    signal = 'sell'
+                    reason = f"🔴 QUICK SPIKE UP ({change_1m:+.2f}% in 1m)"
+                    print(f"      ➡️  {reason}")
+                elif change_1m < -0.12:  # Bajada rápida → LONG
+                    signal = 'buy'
+                    reason = f"🟢 QUICK DIP DOWN ({change_1m:+.2f}% in 1m)"
+                    print(f"      ➡️  {reason}")
+            
+            else:
+                print(f"      ⏸️  No clear signal (waiting for overextension)")
+            
+            # Si encontramos señal, ejecutar
+            if signal:
+                log_decision(f"🎯 SCALP SIGNAL: {signal.upper()} {symbol}", {
+                    'type': 'scalp_signal',
                     'symbol': symbol,
-                    'side': 'SHORT',
+                    'side': signal,
                     'price': price,
-                    'rsi': rsi
+                    'reason': reason,
+                    'rsi_5m': rsi_5m,
+                    'dist_ema': dist_ema,
+                    'change_1m': change_1m,
+                    'expected_profit': expected_profit
                 })
-                return symbol, 'sell', price, size
-            
-            # Take LONG if RSI < 55 (neutral to oversold)
-            if rsi < 55:
-                print(f"   ✅ TAKING LONG on {symbol} (RSI={rsi:.1f} < 55)")
-                log_decision(f"📈 OPENING LONG {symbol}", {
-                    'type': 'trade_signal',
-                    'symbol': symbol,
-                    'side': 'LONG',
-                    'price': price,
-                    'rsi': rsi
-                })
-                return symbol, 'buy', price, size
+                return symbol, signal, price, size
         
+        print(f"\n   🔍 No scalp opportunity - waiting for price overextension...")
         return None
     
     def open_position(self, symbol: str, side: str, price: float, size: float) -> bool:
@@ -655,12 +755,14 @@ class ConservativeGridBot:
         for sym, pos in self.positions.items():
             print(f"      {sym}: {pos['side'].upper()} @ ${pos['entry_price']:.4f}")
     
-    def run(self, interval: int = 30):
-        """Ejecutar bot"""
-        print(f"\n🚀 Starting bot...")
-        print(f"   Interval: {interval}s")
-        print(f"   Max Loss: ${self.max_daily_loss}")
-        print(f"   Max Trades: {self.max_daily_trades}")
+    def run(self, interval: int = 15):
+        """Ejecutar bot - MICRO SCALPER MODE"""
+        print(f"\n🚀 MICRO SCALPER STARTING...")
+        print(f"   ⚡ Interval: {interval}s (fast mode)")
+        print(f"   💰 Target: $1-2 per trade")
+        print(f"   🎯 Strategy: Catch reversions")
+        print(f"   📊 Max Loss: ${self.max_daily_loss}")
+        print(f"   🔄 Max Trades: {self.max_daily_trades}")
         
         cycle = 0
         last_status = 0
@@ -670,34 +772,32 @@ class ConservativeGridBot:
                 cycle += 1
                 now = time.time()
                 
-                print(f"\n{'─'*50}")
-                print(f"🔄 Cycle {cycle} - {datetime.now().strftime('%H:%M:%S')}")
+                print(f"\n{'─'*60}")
+                print(f"⚡ Cycle {cycle} - {datetime.now().strftime('%H:%M:%S')}")
                 
                 # Safety check
                 is_safe, reason = self.check_safety()
                 print(f"   {reason}")
                 
                 if not is_safe:
-                    print("   ⏸️ Paused")
+                    print("   ⏸️ Paused - waiting for safe conditions")
                     time.sleep(interval * 2)
                     continue
                 
-                # Check positions
+                # Check positions first (maybe close for profit)
                 self.check_positions()
                 
-                # Find opportunity
-                if len(self.positions) < 3:  # Max 3 positions
+                # Find scalp opportunity
+                if len(self.positions) < 2:  # Max 2 positions (1 BTC + 1 ETH)
                     opp = self.find_opportunity()
                     if opp:
                         symbol, side, price, size = opp
                         self.open_position(symbol, side, price, size)
-                    else:
-                        print("   🔍 No opportunity")
                 else:
-                    print(f"   ⏳ Max positions ({len(self.positions)})")
+                    print(f"   ⏳ Max positions reached ({len(self.positions)})")
                 
-                # Status every 2 min
-                if now - last_status > 120:
+                # Status every 1 min (faster updates)
+                if now - last_status > 60:
                     self.print_status()
                     last_status = now
                 
@@ -711,15 +811,26 @@ class ConservativeGridBot:
 if __name__ == "__main__":
     print("""
     ╔═══════════════════════════════════════════════════════════╗
-    ║          🏆 CONSERVATIVE GRID BOT                         ║
-    ║          Estrategia segura para hackathon                 ║
+    ║          🚀 MICRO SCALPER BOT                             ║
+    ║          Win Hackathon with Quick $1-2 Trades             ║
     ╠═══════════════════════════════════════════════════════════╣
-    ║  • Grid trading en rangos laterales                       ║
-    ║  • Leverage moderado (5x-10x)                             ║
-    ║  • Stop loss automático                                   ║
-    ║  • CoinGecko market filter                                ║
+    ║  STRATEGY:                                                ║
+    ║  • Detect price OVEREXTENSION (away from EMA)             ║
+    ║  • SUBIÓ mucho → SHORT (esperar corrección)               ║
+    ║  • BAJÓ mucho → LONG (esperar rebote)                     ║
+    ║  • TP: 0.12-0.15% = ~$1.2-1.5 profit per trade            ║
+    ║  • SL: 0.25-0.30% = ~$2.5-3 max loss                      ║
+    ╠═══════════════════════════════════════════════════════════╣
+    ║  TIMEFRAMES:                                              ║
+    ║  • 1m  → Entry signal (overextension)                     ║
+    ║  • 5m  → RSI confirmation                                 ║
+    ║  • 15m → Context                                          ║
+    ║  • 1h  → Big picture                                      ║
+    ╠═══════════════════════════════════════════════════════════╣
+    ║  COINS: BTC + ETH only (most stable)                      ║
+    ║  CYCLE: Every 15 seconds (fast mode)                      ║
     ╚═══════════════════════════════════════════════════════════╝
     """)
     
     bot = ConservativeGridBot()
-    bot.run(interval=30)
+    bot.run(interval=15)
