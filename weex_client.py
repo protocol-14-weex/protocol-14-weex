@@ -153,8 +153,10 @@ class WeexClient:
             # Try to parse JSON response
             try:
                 result = response.json()
-            except:
-                result = {"raw": response.text, "status_code": response.status_code}
+            except json.JSONDecodeError:
+                result = {"raw": response.text, "status_code": response.status_code, "error": "Invalid JSON response"}
+            except Exception as e:
+                result = {"raw": response.text, "status_code": response.status_code, "error": str(e)}
             
             # Check for API errors
             if response.status_code != 200:

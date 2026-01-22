@@ -9,5 +9,5 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy project files
 COPY . .
 
-# Run the bot (adjust as needed)
-CMD ["python", "main.py"]
+# Run the Conservative Grid Bot
+CMD ["python", "conservative_grid.py"]

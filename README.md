@@ -196,75 +196,42 @@ Expected output when IP is whitelisted:
 
 ## 📈 Trading Strategies
 
-### 1. Grid Trading Strategy
+### 1. Conservative Grid Bot (Scalper V2)
 
-Grid trading places buy and sell orders at regular intervals, profiting from normal price volatility.
+This is the main strategy (`conservative_grid.py`) designed for the Hackathon. It is a **Hybrid Mean Reversion** bot.
 
-```python
-from strategies.grid_trading import GridTradingStrategy
-from weex_client import WeexClient
+**Core Logic:**
+- **Entry**: Uses **Bollinger Bands (2.0 std)** + **RSI (14)**.
+    -   *Short Signal*: Price breaks ABOVE Upper Band AND RSI > 65 (Overbought).
+    -   *Long Signal*: Price breaks BELOW Lower Band AND RSI < 35 (Oversold).
+- **Exit**: Dynamic Take Profit and Stop Loss based on **ATR (Average True Range)**.
+    -   Stop Loss = 2x ATR (Wider stops during high volatility).
+    -   Take Profit = 1.5x ATR.
 
-client = WeexClient()
-strategy = GridTradingStrategy(
-    client=client,
-    symbol="cmt_btcusdt",
-    config={
-        'grid_levels': 3,           # Orders above and below price
-        'grid_spacing_percent': 0.5, # 0.5% between levels
-        'order_size_usd': 10,        # $10 per order
-        'max_leverage': 5,           # 5x leverage
-        'use_filters': True,         # RSI/MACD filters
-    }
-)
+**Safety Features:**
+- **State Sync**: Automatically detects open positions on startup.
+- **Trend Filter**: Checks 15m trend to avoid trading against strong momentum.
+- **Daily Limits**: Stops trading if daily loss limit is hit.
+
+**Run this bot:**
+```bash
+python conservative_grid.py
 ```
 
-**Configuration Options:**
+### 2. Grid Trading Strategy (Legacy)
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| `grid_levels` | 3 | Number of grid levels each side |
-| `grid_spacing_percent` | 0.5 | Percentage between each level |
-| `order_size_usd` | 10 | USD value per grid order |
-| `rebalance_threshold` | 2.0 | Price move % to trigger rebalance |
-| `use_filters` | True | Enable RSI/MACD filters |
-| `use_sentiment` | False | Enable DeepSeek AI |
+Classic grid trading that places orders at fixed intervals. Good for sideways markets but riskier in trends.
 
-**Run Grid Bot:**
-```bash
+```python
 python run_grid_bot.py
 ```
 
----
+### 3. Peak Hunter Strategy
 
-### 2. Peak Hunter Strategy
+Detects extreme overbought/oversold conditions on volatile coins (DOGE, SOL, PEPE).
 
-Detects coins at peak prices (overbought) for SHORT positions or at valleys (oversold) for LONG positions.
-
-**Entry Signals for SHORT:**
-- RSI > 70 (overbought)
-- 24h change > 5% (strong upward movement)
-- High signal strength score
-
-**Monitored Coins (by volatility):**
-- 🔥 DOGE (most volatile)
-- 🔥 SOL (very volatile)
-- 🔥 XRP (volatile)
-- 🟡 ADA (medium-high)
-- 🟢 ETH, BNB, BTC (stable)
-
-**Run Peak Hunter:**
 ```bash
 python run_peak_hunter.py
-```
-
----
-
-### 3. Momentum Scalper
-
-Quick scalping strategy based on short-term momentum.
-
-```bash
-python momentum_scalper.py
 ```
 
 ---

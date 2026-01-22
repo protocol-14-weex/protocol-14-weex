@@ -231,6 +231,9 @@ class ConservativeGridBot:
         # Obtener balance inicial
         self.update_balance()
         
+        # Sincronizar estado inicial
+        self.sync_state()
+        
         print(f"\n💰 Balance: ${self.available:.2f} disponible")
         print(f"📊 Monedas: {list(self.GRID_CONFIGS.keys())}")
     
@@ -248,10 +251,69 @@ class ConservativeGridBot:
         except Exception as e:
             print(f"❌ Error getting balance: {e}")
         
-        self.equity = 0
-        self.available = 0
         self.unrealized = 0
         return False
+
+    def sync_state(self):
+        """Sincronizar estado con el exchange (recuperar posiciones abiertas)"""
+        print(f"\n🔄 Syncing state with exchange...")
+        try:
+            # Get all positions
+            all_positions = self.client.get_all_positions()
+            pos_list = []
+            if isinstance(all_positions, list):
+                pos_list = all_positions
+            elif isinstance(all_positions, dict) and 'data' in all_positions:
+                pos_list = all_positions['data']
+            
+            count = 0
+            for pos in pos_list:
+                symbol = pos.get('symbol')
+                # Check if this symbol is in our config
+                if symbol in self.GRID_CONFIGS:
+                    size_str = pos.get('total', '0')
+                    size = float(size_str) if size_str else 0
+                    
+                    if size > 0:
+                        side_raw = pos.get('holdSide', 'unknown')
+                        # Map side
+                        side = 'buy' if str(side_raw).lower() == 'long' else 'sell'
+                        entry_price = float(pos.get('averageOpenPrice', 0))
+                        
+                        # Reconstruct position in memory
+                        # Note: We won't have the original order_id or TP/SL prices exactly as logic calculated them,
+                        # but we can approximate or just track them for closure.
+                        
+                        config = self.GRID_CONFIGS[symbol]
+                        
+                        # Recalculate TP/SL based on entry
+                        if side == 'buy':
+                            tp_price = entry_price * (1 + config.take_profit / 100)
+                            sl_price = entry_price * (1 - config.stop_loss / 100)
+                        else:
+                            tp_price = entry_price * (1 - config.take_profit / 100)
+                            sl_price = entry_price * (1 + config.stop_loss / 100)
+
+                        self.positions[symbol] = {
+                            'order_id': 'recovered_from_exchange',
+                            'side': side,
+                            'entry_price': entry_price,
+                            'size': size,
+                            'tp': tp_price,
+                            'sl': sl_price,
+                            'leverage': config.leverage,
+                            'open_time': datetime.now() # Reset timer
+                        }
+                        count += 1
+                        print(f"   ✅ Recovered {symbol}: {side.upper()} @ ${entry_price:.4f}")
+            
+            if count == 0:
+                print("   (No matching positions found on exchange)")
+            else:
+                print(f"   ✓ Synced {count} positions.")
+                
+        except Exception as e:
+            print(f"❌ Error syncing state: {e}")
     
     def get_step_size(self, symbol: str) -> float:
         """Get step size for symbol"""
@@ -296,6 +358,62 @@ class ConservativeGridBot:
             print(f"❌ Ticker error {symbol}: {e}")
         return {}
     
+    def calculate_atr(self, candles: List[List], period: int = 14) -> float:
+        """Calculate Average True Range (ATR) for volatility"""
+        try:
+            if not candles or len(candles) < period + 1:
+                return 0.0
+                
+            # Sort by timestamp (candles[0] is timestamp)
+            candles_sorted = sorted(candles, key=lambda x: int(x[0]))
+            
+            # Extract high, low, close
+            highs = [float(c[2]) for c in candles_sorted]
+            lows = [float(c[3]) for c in candles_sorted]
+            closes = [float(c[4]) for c in candles_sorted]
+            
+            tr_list = []
+            for i in range(1, len(closes)):
+                h = highs[i]
+                l = lows[i]
+                pc = closes[i-1]
+                
+                tr = max(h - l, abs(h - pc), abs(l - pc))
+                tr_list.append(tr)
+                
+            if not tr_list:
+                return 0.0
+                
+            # Simple average for ATR (or EMA-like smoothing)
+            return sum(tr_list[-period:]) / period
+        except Exception as e:
+            print(f"❌ ATR Error: {e}")
+            return 0.0
+
+    def calculate_bollinger_bands(self, closes: List[float], period: int = 20, multiplier: float = 2.0) -> Tuple[float, float, float]:
+        """
+        Calculate Bollinger Bands
+        Returns: (upper, middle, lower)
+        """
+        try:
+            if len(closes) < period:
+                return 0, 0, 0
+                
+            # Simple Moving Average (Middle Band)
+            sma = sum(closes[-period:]) / period
+            
+            # Standard Deviation
+            variance = sum([((x - sma) ** 2) for x in closes[-period:]]) / period
+            std_dev = variance ** 0.5
+            
+            upper = sma + (multiplier * std_dev)
+            lower = sma - (multiplier * std_dev)
+            
+            return upper, sma, lower
+        except Exception as e:
+            print(f"❌ BB Error: {e}")
+            return 0, 0, 0
+
     def calculate_rsi(self, symbol: str) -> float:
         """Calcular RSI para el símbolo"""
         try:
@@ -399,30 +517,47 @@ class ConservativeGridBot:
                 
                 # Check if overextended (1m timeframe)
                 if tf == '1m':
-                    # Overextended UP: price > 0.15% above EMA
-                    # Overextended DOWN: price < 0.15% below EMA
                     analysis['1m']['overextended_up'] = distance_from_ema > 0.12
                     analysis['1m']['overextended_down'] = distance_from_ema < -0.12
                 
-                # Calculate RSI for 5m
-                if tf == '5m' and len(closes) >= 14:
-                    gains = []
-                    losses = []
-                    for i in range(1, len(closes)):
-                        change = closes[i] - closes[i-1]
-                        gains.append(max(0, change))
-                        losses.append(max(0, -change))
+                # Calculate Indicators for 5m (BB, RSI, ATR)
+                if tf == '5m':
+                    # RSI
+                    if len(closes) >= 14:
+                        gains = []
+                        losses = []
+                        for i in range(1, len(closes)):
+                            change = closes[i] - closes[i-1]
+                            gains.append(max(0, change))
+                            losses.append(max(0, -change))
+                        
+                        avg_gain = sum(gains[-14:]) / 14 if len(gains) >= 14 else 0
+                        avg_loss = sum(losses[-14:]) / 14 if len(losses) >= 14 else 0
+                        
+                        if avg_loss > 0:
+                            rs = avg_gain / avg_loss
+                            rsi = 100 - (100 / (1 + rs))
+                        else:
+                            rsi = 100 if avg_gain > 0 else 50
+                        
+                        analysis['5m']['rsi'] = rsi
                     
-                    avg_gain = sum(gains[-14:]) / 14 if len(gains) >= 14 else 0
-                    avg_loss = sum(losses[-14:]) / 14 if len(losses) >= 14 else 0
+                    # Bollinger Bands & ATR
+                    bb_up, bb_mid, bb_low = self.calculate_bollinger_bands(closes, period=20, multiplier=2)
+                    atr = self.calculate_atr(candles, period=14)
                     
-                    if avg_loss > 0:
-                        rs = avg_gain / avg_loss
-                        rsi = 100 - (100 / (1 + rs))
+                    analysis['5m']['bb_upper'] = bb_up
+                    analysis['5m']['bb_middle'] = bb_mid
+                    analysis['5m']['bb_lower'] = bb_low
+                    analysis['5m']['atr'] = atr
+                    
+                    # BB Signal
+                    if current > bb_up:
+                        analysis['5m']['bb_status'] = 'upper_break'
+                    elif current < bb_low:
+                        analysis['5m']['bb_status'] = 'lower_break'
                     else:
-                        rsi = 100 if avg_gain > 0 else 50
-                    
-                    analysis['5m']['rsi'] = rsi
+                        analysis['5m']['bb_status'] = 'inside'
                     
             except Exception as e:
                 print(f"      ⚠️ Error {tf}: {e}")
@@ -520,94 +655,148 @@ class ConservativeGridBot:
             expected_profit = notional * (config.take_profit / 100)
             max_loss = notional * (config.stop_loss / 100)
             
-            # ═══════════════════════════════════════════════════════════
-            # 🎯 SIGNAL DETECTION
-            # ═══════════════════════════════════════════════════════════
+    def find_opportunity(self) -> Optional[Tuple[str, str, float, float]]:
+        """
+        🎯 SCALPER V2 - Bollinger Bands + Dynamic ATR Risk
+        
+        ESTRATEGIA:
+        - Bollinger Bands Reversion
+        - Dynamic TP/SL based on Volatility (ATR)
+        """
+        print(f"\n🔍 SCALPER V2 ANALYSIS:")
+        print(f"   Strategy: Bollinger Bands Reversion + Dynamic ATR")
+        
+        for symbol, config in self.GRID_CONFIGS.items():
+            # Skip si ya tenemos posición
+            if symbol in self.positions:
+                print(f"\n   {symbol}: ⏳ Already in position")
+                continue
+            
+            # Multi-timeframe analysis
+            mtf = self.get_multi_timeframe_analysis(symbol)
+            
+            # Extract data
+            m5 = mtf.get('5m', {})
+            m15 = mtf.get('15m', {})
+            
+            price = m5.get('current_price', 0)
+            if price == 0:
+                print(f"\n   {symbol}: ❌ No price data")
+                continue
+            
+            # Key metrics from 5m (our trading timeframe)
+            rsi = m5.get('rsi', 50)
+            atr = m5.get('atr', 0)
+            bb_upper = m5.get('bb_upper', 0)
+            bb_lower = m5.get('bb_lower', 0)
+            bb_status = m5.get('bb_status', 'inside')
+            
+            # Additional context from 15m
+            trend_15m = m15.get('trend', 'neutral')
+            
+            # Print analysis
+            print(f"\n   📊 {symbol} @ ${price:.2f}")
+            print(f"      5m:  RSI: {rsi:.1f} | BB Status: {bb_status.upper()}")
+            print(f"      ATR: ${atr:.4f}")
+            
+            if bb_status == 'inside':
+                print(f"      ⏸️  Price inside bands - No signal")
+                continue
+
+            # Calculate Dynamic Risk (2x ATR for SL, 1.5x ATR for TP)
+            # Ensure minimum spacing (0.2% price) if ATR is too low
+            min_spacing = price * 0.002
+            sl_dist = max(atr * 2, min_spacing)
+            tp_dist = max(atr * 1.5, min_spacing * 1.5)
+            
+            # Convert to percentages for logging
+            sl_pct = (sl_dist / price) * 100
+            tp_pct = (tp_dist / price) * 100
+
+            # Calculate size
+            step = self.get_step_size(symbol)
+            notional = config.position_size * config.leverage
+            raw_size = notional / price
+            size = round(raw_size / step) * step
             
             signal = None
             reason = ""
             
-            # CASO 1: OVEREXTENDED UP → SHORT
-            # Precio subió mucho, esperar corrección
-            if overext_up or dist_ema > 0.10:
-                # Confirmación: RSI alto en 5m
-                if rsi_5m > 55:
+            # ═══════════════════════════════════════════════════════════
+            # 🎯 SIGNAL LOGIC
+            # ═══════════════════════════════════════════════════════════
+            
+            # CASO 1: SHORT (Price > Upper Band + RSI Overbought)
+            if bb_status == 'upper_break' or price > bb_upper:
+                if rsi > 65:
+                    # Filter: Don't short if 15m is super bullish? Maybe just rely on RSI
                     signal = 'sell'
-                    reason = f"🔴 OVEREXTENDED UP | EMA dist: {dist_ema:+.2f}% | RSI: {rsi_5m:.0f}"
-                    print(f"      ➡️  {reason}")
-                    print(f"      💰 Expected profit: ${expected_profit:.2f} | Max loss: ${max_loss:.2f}")
+                    reason = f"🔴 BB BREAK UP + RSI ({rsi:.0f}) > 65"
             
-            # CASO 2: OVEREXTENDED DOWN → LONG
-            # Precio bajó mucho, esperar rebote
-            elif overext_down or dist_ema < -0.10:
-                # Confirmación: RSI bajo en 5m
-                if rsi_5m < 45:
+            # CASO 2: LONG (Price < Lower Band + RSI Oversold)
+            elif bb_status == 'lower_break' or price < bb_lower:
+                if rsi < 35:
                     signal = 'buy'
-                    reason = f"🟢 OVEREXTENDED DOWN | EMA dist: {dist_ema:+.2f}% | RSI: {rsi_5m:.0f}"
-                    print(f"      ➡️  {reason}")
-                    print(f"      💰 Expected profit: ${expected_profit:.2f} | Max loss: ${max_loss:.2f}")
+                    reason = f"🟢 BB BREAK DOWN + RSI ({rsi:.0f}) < 35"
             
-            # CASO 3: RSI EXTREMO sin overextension clara
-            elif rsi_5m > 65 and change_1m > 0:
-                signal = 'sell'
-                reason = f"🔴 RSI OVERBOUGHT ({rsi_5m:.0f}) + upward momentum"
-                print(f"      ➡️  {reason}")
-            
-            elif rsi_5m < 35 and change_1m < 0:
-                signal = 'buy'
-                reason = f"🟢 RSI OVERSOLD ({rsi_5m:.0f}) + downward momentum"
-                print(f"      ➡️  {reason}")
-            
-            # CASO 4: Momentum rápido (1m change > 0.15%)
-            elif abs(change_1m) > 0.12:
-                if change_1m > 0.12:  # Subida rápida → SHORT
-                    signal = 'sell'
-                    reason = f"🔴 QUICK SPIKE UP ({change_1m:+.2f}% in 1m)"
-                    print(f"      ➡️  {reason}")
-                elif change_1m < -0.12:  # Bajada rápida → LONG
-                    signal = 'buy'
-                    reason = f"🟢 QUICK DIP DOWN ({change_1m:+.2f}% in 1m)"
-                    print(f"      ➡️  {reason}")
-            
-            else:
-                print(f"      ⏸️  No clear signal (waiting for overextension)")
-            
-            # Si encontramos señal, ejecutar
+            # Execute
             if signal:
-                log_decision(f"🎯 SCALP SIGNAL: {signal.upper()} {symbol}", {
-                    'type': 'scalp_signal',
+                print(f"      ➡️  {reason}")
+                print(f"      📏 Dynamic Risk: TP {tp_pct:.2f}% | SL {sl_pct:.2f}%")
+                
+                # Update config dynamically for this trade?
+                # We need to pass these specific TP/SL prices to open_position
+                # BUT open_position currently uses config percentages. 
+                # We will calculate the percentages here and update the config temporarily 
+                # OR better: pass explicit tp/sl to open_position.
+                # Let's override the logic in open_position relative to the class config
+                
+                # Store dynamic params in temp map or pass as custom arguments?
+                # Simplest: Update the config object for this symbol temporarily (risky if async)
+                # Better: Return extra data.
+                
+                log_decision(f"🎯 SIGNAL V2: {signal.upper()} {symbol}", {
+                    'type': 'scalp_v2',
                     'symbol': symbol,
                     'side': signal,
                     'price': price,
                     'reason': reason,
-                    'rsi_5m': rsi_5m,
-                    'dist_ema': dist_ema,
-                    'change_1m': change_1m,
-                    'expected_profit': expected_profit
+                    'rsi': rsi,
+                    'bb_status': bb_status,
+                    'tp_pct': tp_pct,
+                    'sl_pct': sl_pct
                 })
-                return symbol, signal, price, size
+                
+                # Hack: Return custom TP/SL percentage along with signal
+                # Tuple: (symbol, side, price, size, tp_pct, sl_pct)
+                return symbol, signal, price, size, tp_pct, sl_pct
         
-        print(f"\n   🔍 No scalp opportunity - waiting for price overextension...")
+        print(f"\n   🔍 No high-prob opportunity yet...")
         return None
     
-    def open_position(self, symbol: str, side: str, price: float, size: float) -> bool:
-        """Abrir posición"""
+    def open_position(self, symbol: str, side: str, price: float, size: float, 
+                     tp_pct: float = None, sl_pct: float = None) -> bool:
+        """Abrir posición con TP/SL dinámicos opcionales"""
         config = self.GRID_CONFIGS.get(symbol)
         if not config:
             return False
+        
+        # Use provided TP/SL or fall back to config
+        take_profit = tp_pct if tp_pct else config.take_profit
+        stop_loss = sl_pct if sl_pct else config.stop_loss
         
         try:
             # Set leverage
             self.client.set_leverage(symbol, config.leverage)
             time.sleep(0.5)
             
-            # Calculate TP/SL
+            # Calculate TP/SL prices
             if side == 'buy':
-                tp_price = price * (1 + config.take_profit / 100)
-                sl_price = price * (1 - config.stop_loss / 100)
+                tp_price = price * (1 + take_profit / 100)
+                sl_price = price * (1 - stop_loss / 100)
             else:
-                tp_price = price * (1 - config.take_profit / 100)
-                sl_price = price * (1 + config.stop_loss / 100)
+                tp_price = price * (1 - take_profit / 100)
+                sl_price = price * (1 + stop_loss / 100)
             
             print(f"\n{'='*50}")
             print(f"🎯 OPENING POSITION")
@@ -616,8 +805,8 @@ class ConservativeGridBot:
             print(f"   Size: {size}")
             print(f"   Leverage: {config.leverage}x")
             print(f"   Entry: ${price:.4f}")
-            print(f"   TP: ${tp_price:.4f} ({config.take_profit}%)")
-            print(f"   SL: ${sl_price:.4f} ({config.stop_loss}%)")
+            print(f"   TP: ${tp_price:.4f} ({take_profit:.2f}%)")
+            print(f"   SL: ${sl_price:.4f} ({stop_loss:.2f}%)")
             
             # Place order
             result = self.client.place_order(
@@ -791,8 +980,8 @@ class ConservativeGridBot:
                 if len(self.positions) < 2:  # Max 2 positions (1 BTC + 1 ETH)
                     opp = self.find_opportunity()
                     if opp:
-                        symbol, side, price, size = opp
-                        self.open_position(symbol, side, price, size)
+                        symbol, side, price, size, tp_pct, sl_pct = opp
+                        self.open_position(symbol, side, price, size, tp_pct, sl_pct)
                 else:
                     print(f"   ⏳ Max positions reached ({len(self.positions)})")
                 
