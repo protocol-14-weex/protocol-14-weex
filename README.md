@@ -1,4 +1,4 @@
-# Protocol-14 WEEX AI Trading Bot
+# Protocol-14 WEEX AI Trading Bot enero 2026
 
 <p align="center">
   <b>AI-Powered Algorithmic Trading System for WEEX Futures</b><br>
