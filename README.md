@@ -1,11 +1,6 @@
 # Protocol-14 WEEX AI Trading Bot enero 2026
 
 <p align="center">
-  <b>AI-Powered Algorithmic Trading System for WEEX Futures</b><br>
-  <i>Built for WEEX AI Trading Hackathon 2026</i>
-</p>
-
-<p align="center">
   <img src="https://img.shields.io/badge/Python-3.12+-blue.svg" alt="Python">
   <img src="https://img.shields.io/badge/License-MIT-green.svg" alt="License">
   <img src="https://img.shields.io/badge/Platform-WEEX-orange.svg" alt="WEEX">
@@ -525,12 +520,6 @@ Contributions are welcome! Please follow these steps:
 3. Commit your changes (`git commit -m 'Add amazing feature'`)
 4. Push to the branch (`git push origin feature/amazing-feature`)
 5. Open a Pull Request
-
----
-
-## License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
 ---
 
